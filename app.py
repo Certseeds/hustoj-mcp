@@ -13,6 +13,7 @@ Note: requires `mcp` package to be installed in the environment.
 
 from __future__ import annotations
 from typing import Optional
+import os
 from mcp.server.fastmcp import FastMCP
 from src import ConfigStore, SessionStore, HUSTOJClient
 
@@ -124,26 +125,27 @@ def contest(cid: int) -> dict:
 
 @mcp.tool()
 def submit(
-    source: str,
+    file_name: str = None,
     problem_id: Optional[int] = None,
     cid: Optional[int] = None,
     pid: Optional[int] = None,
     language: Optional[str] = "cpp",
     vcode: Optional[str] = None,
-    test_run: Optional[bool] = False,
-    domain: Optional[str] = None,
+    test_run: Optional[bool] = False
 ) -> dict:
     """Submit source code to a problem or contest.
+
+    file_name: 文件的绝对路径
 
     Provide either `problem_id` for single problem submit, or `cid` and `pid` for contest submit.
     """
     cfg = ConfigStore()
     cfg_data = cfg.load() or {}
-    domain = domain or cfg_data.get("domain")
-    if not domain:
-        return {"ok": False, "error": "domain required"}
+    domain = cfg_data.get("domain")
     store = SessionStore()
     client = HUSTOJClient(domain, session_store=store)
+    with open(file_name, "r", encoding="utf-8") as f:
+        source = f.read()
     try:
         runid = client.submit_solution(
             problem_id=problem_id,
@@ -162,7 +164,19 @@ def submit(
 def main():
     if FastMCP is None:
         raise RuntimeError("mcp package not installed. Install via 'uv add mcp[cli]'")
-    mcp.run()
+    # 默认使用 stdio 以便 VS Code / MCP 客户端通过 spawn 直接通信。
+    # 若需要 HTTP 模式: 设置环境变量 MCP_TRANSPORT=http (可选再设 MCP_PORT / MCP_HOST)
+    transport = os.getenv("MCP_TRANSPORT", "stdio").lower()
+    if transport in {"http", "streamable-http"}:
+        host = os.getenv("MCP_HOST", "127.0.0.1")
+        port_str = os.getenv("MCP_PORT", "8001")
+        try:
+            port = int(port_str)
+        except ValueError:
+            port = 8001
+        mcp.run(transport="streamable-http", host=host, port=port)
+    else:
+        mcp.run()  # stdio 模式
 
 
 if __name__ == "__main__":
