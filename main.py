@@ -170,7 +170,7 @@ def _cmd_config(args: argparse.Namespace) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="HUSTOJ MCP 辅助 CLI")
+    parser = argparse.ArgumentParser(description="HUSTOJ 辅助 CLI")
     parser.add_argument("--verbose", action="store_true", help="显示调试日志")
 
     subparsers = parser.add_subparsers(dest="command", required=True)
