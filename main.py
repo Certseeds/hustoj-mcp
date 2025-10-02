@@ -86,7 +86,7 @@ def _cmd_problem(args: argparse.Namespace) -> int:
             print(f"--- {k} ---\n{v[:400]}\n")
 
     output = args.output
-    md_content = HUSTOJClient.html_to_post_md(result.get("html", ""))
+    md_content = HUSTOJClient.problem_to_md(result.get("html", ""))
     if output:
         Path(output).write_text(md_content , encoding="utf-8")
         print(f"已保存完整 HTML 到 {output}")
@@ -106,6 +106,42 @@ def _cmd_contest(args: argparse.Namespace) -> int:
         logging.error("获取比赛题目失败: %s", exc)
         return 1
     print(json.dumps(problems, indent=2, ensure_ascii=False))
+    return 0
+
+
+def _cmd_submit(args: argparse.Namespace) -> int:
+    # refresh session by performing a login before each submit
+    login_rc = _cmd_login()
+    if login_rc != 0:
+        logging.error("在提交前刷新会话失败，取消提交")
+        return 1
+    cfg = ConfigStore()
+    cfg_data = cfg.load() or {}
+    domain = cfg_data.get("domain") or input("域名: ")
+    store = SessionStore()
+    client = HUSTOJClient(domain, session_store=store)
+
+    # read source from file or stdin
+    if args.file:
+        src = Path(args.file).read_text(encoding="utf-8")
+    else:
+        logging.info("不支持从stdin读取代码")
+        return 1
+
+    try:
+        client.submit_solution(
+            problem_id=args.id,
+            cid=args.cid,
+            pid=args.pid,
+            source=src,
+            language=args.language,
+            vcode=args.vcode,
+            test_run=args.test_run,
+        )
+    except Exception as exc:
+        logging.error("提交失败: %s", exc)
+        return 1
+    logging.info("提交成功")
     return 0
 
 
@@ -177,6 +213,22 @@ def _build_parser() -> argparse.ArgumentParser:
     contest_parser = subparsers.add_parser("contest", help="获取比赛下的题目列表")
     contest_parser.add_argument("--cid", type=int, required=True, help="比赛 cid")
     contest_parser.set_defaults(func=_cmd_contest)
+
+    submit_parser = subparsers.add_parser("submit", help="提交代码到指定题目或比赛")
+    submit_group = submit_parser.add_mutually_exclusive_group(required=True)
+    submit_group.add_argument("--id", type=int, help="题目 id (单题提交)")
+    submit_group.add_argument("--cid", type=int, help="比赛 cid (比赛提交需同时提供 --pid)")
+    submit_parser.add_argument("--pid", type=int, help="比赛中的 pid (从 0 开始)")
+    submit_parser.add_argument("--file", help="包含代码的文件 (不提供则从 stdin 读取)")
+    submit_parser.add_argument(
+        "--language",
+        choices=["c", "cpp", "java"],
+        default="cpp",
+        help="语言 (c, cpp, java)，默认 cpp",
+    )
+    submit_parser.add_argument("--vcode", help="验证码 (如果站点要求)")
+    submit_parser.add_argument("--test-run", dest="test_run", action="store_true", help="执行测试运行")
+    submit_parser.set_defaults(func=_cmd_submit)
 
     return parser
 

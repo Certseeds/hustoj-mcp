@@ -8,8 +8,9 @@ import secrets
 import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from typing import Dict, Optional, Tuple
-from urllib.parse import urljoin, urlparse, parse_qs
+from enum import IntEnum
+from typing import Dict, Optional, Tuple, Union
+from urllib.parse import urljoin, urlparse, parse_qs, urlencode, quote_plus
 
 import requests
 from bs4 import BeautifulSoup
@@ -19,7 +20,13 @@ from requests.utils import dict_from_cookiejar
 
 from .session_store import SessionData, SessionStore
 
-_LOGGER = logging.getLogger(__name__)
+LOGGER = logging.getLogger(__name__)
+
+
+class Language(IntEnum):
+    C = 0
+    CPP = 1
+    JAVA = 3
 
 
 def _normalize_base_url(domain: str) -> str:
@@ -84,7 +91,7 @@ class HUSTOJClient:
         session = self._new_session()
         if stored:
             session.cookies.update(stored.cookies)
-            _LOGGER.debug("已从存储文件加载会话 cookie")
+            LOGGER.debug("已从存储文件加载会话 cookie")
         self._session = session
         return session
 
@@ -146,12 +153,11 @@ class HUSTOJClient:
         if persist:
             self.session_store.save(
                 SessionData(
-                    domain=self.base_url,
                     cookies=session.cookies,
                     stored_at=datetime.now(timezone.utc),
                 )
             )
-            _LOGGER.info("已保存登录状态到存储文件")
+            LOGGER.info("已保存登录状态到存储文件")
 
         self._session = session
         return LoginResult(
@@ -283,7 +289,7 @@ class HUSTOJClient:
         return {"title": title, "body_html": body_html, "sections": sections}
 
     @staticmethod
-    def html_to_post_md(html: str) -> str:
+    def problem_to_md(html: str) -> str:
         """Convert a fetched problem HTML (pre.*) into post.* Markdown format.
 
         The output mirrors the repository's `example/post.1000.md` layout.
@@ -432,6 +438,228 @@ class HUSTOJClient:
         except RequestException as exc:
             raise LoginError(f"无法获取竞赛页面: {exc}") from exc
         return self.parse_contest_html(resp.text)
+
+    def submit_solution(
+        self,
+        *,
+        problem_id: int | None = None,
+        cid: int | None = None,
+        pid: int | None = None,
+        source: str,
+        language: Union[int, str, Language] = None,
+        vcode: Optional[str] = None,
+        test_run: bool = False,
+    ) -> int:
+        """Submit source code to the judge and return the resulting run id.
+
+        - For single problem submissions provide `problem_id`.
+        - For contest submissions provide `cid` and `pid`.
+
+        The method posts to submit.php?ajax and parses the returned solution id.
+        """
+        session = self._ensure_session()
+
+        # Normalize language input: accept Language enum, int, or str like 'c','cpp','java'
+        if language is None:
+            # default to cpp
+            lang_val = int(Language.CPP)
+        elif isinstance(language, str):
+            mapping = {
+                "c": int(Language.C),
+                "cpp": int(Language.CPP),
+                "java": int(Language.JAVA),
+            }
+            key = language.lower()
+            if key not in mapping:
+                raise ValueError("未知的语言: %s. 支持: c, cpp, java" % language)
+            lang_val = mapping[key]
+        elif isinstance(language, Language):
+            lang_val = int(language)
+        else:
+            # assume numeric
+            try:
+                lang_val = int(language)
+            except Exception:
+                raise ValueError("language 必须是 int/str/Language 之一")
+
+        # warm up session by loading the submit page (some servers check referer/cookies)
+        if problem_id is not None:
+            submitpage_path = f"onlinejudge/submitpage.php?id={problem_id}"
+        else:
+            # contest submitpage
+            submitpage_path = f"onlinejudge/submitpage.php?cid={cid}&pid={pid}"
+        try:
+            r = session.get(self._url(submitpage_path), timeout=self.timeout)
+        except Exception:
+            pass
+            # ignore failures here; submission may still work
+
+        # set a lastlang cookie so server-side may pick a template if needed
+        session.cookies.set("lastlang", str(int(lang_val)))
+
+        payload = {}
+        if problem_id is not None:
+            # for test runs some templates expect negative id
+            payload["id"] = -problem_id if test_run else problem_id
+        else:
+            if cid is None or pid is None:
+                raise ValueError("需要提供 problem_id 或 (cid 和 pid) 之一")
+            payload["cid"] = cid
+            payload["pid"] = pid if not test_run else -pid
+
+        payload["language"] = str(int(lang_val))
+        payload["source"] = source
+        if vcode:
+            payload["vcode"] = vcode
+        else:
+            payload["vcode"] = ""
+
+        # Try to fetch CSRF token (many templates expose it via csrf.php)
+        try:
+            # ensure using the same session
+            LOGGER.debug(
+                "Session cookies before csrf fetch: %s", list(session.cookies.keys())
+            )
+            # Use headers that closely mirror a browser AJAX request (see user-provided curl)
+            headers_csrf = {
+                "Referer": self._url(submitpage_path),
+                "Accept": "text/html, */*; q=0.01",
+                # requests will handle Accept-Encoding automatically, but include common values
+                "Accept-Encoding": "gzip, deflate, br, zstd",
+                "X-Requested-With": "XMLHttpRequest",
+                "DNT": "1",
+                "Sec-GPC": "1",
+                "Connection": "keep-alive",
+                "Sec-Fetch-Dest": "empty",
+                "Sec-Fetch-Mode": "cors",
+                "Sec-Fetch-Site": "same-origin",
+                "TE": "trailers",
+            }
+            csrf_url_candidates = ("onlinejudge/csrf.php", "csrf.php")
+            csrf_value = None
+            for path in csrf_url_candidates:
+                csrf_url = self._url(path)
+                LOGGER.debug("Trying csrf url: %s", csrf_url)
+                r = session.get(
+                    csrf_url,
+                    timeout=self.timeout,
+                    headers=headers_csrf,
+                    allow_redirects=True,
+                )
+                if r.status_code != 200:
+                    LOGGER.debug(
+                        "csrf url %s returned status %s", csrf_url, r.status_code
+                    )
+                    continue
+                if not r.text or r.text.strip() == "":
+                    LOGGER.debug("csrf url %s returned empty body", csrf_url)
+                    continue
+                soup = BeautifulSoup(r.text, "html.parser")
+                inp = soup.find("input", attrs={"name": "csrf"})
+                if inp and inp.get("value"):
+                    csrf_value = inp.get("value")
+                    LOGGER.debug("Found csrf token from %s", csrf_url)
+                    break
+            if csrf_value:
+                payload["csrf"] = csrf_value
+            else:
+                LOGGER.debug(
+                    "No csrf token found from candidates: %s", csrf_url_candidates
+                )
+        except Exception as exc:
+            # non-fatal; continue without csrf
+            LOGGER.debug("Failed to fetch csrf token, continuing without it: %s", exc)
+        LOGGER.debug("csrf: %s", payload.get("csrf"))
+        # Attempt to extract all form fields from the submit page and merge into payload.
+        # This ensures hidden fields (including any anti-forgery tokens or flags) are included.
+
+        # Post to non-AJAX endpoint (browser form posts to submit.php)
+        url = self._url("onlinejudge/submit.php")
+        # make the POST look more like a browser form submission (match HAR)
+        headers = {
+            "Referer": self._url(submitpage_path),
+            "Origin": self.base_url,
+            # mimic a real browser User-Agent (some sites have UA checks)
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64; rv:141.0) Gecko/20100101 Firefox/141.0",
+            "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.5",
+            "Accept-Encoding": "gzip, deflate, br, zstd",
+            # explicit content type to match browser POST
+            "Content-Type": "application/x-www-form-urlencoded",
+            "DNT": "1",
+            "Sec-GPC": "1",
+            "Connection": "keep-alive",
+            "Upgrade-Insecure-Requests": "1",
+            "Sec-Fetch-Dest": "document",
+            "Sec-Fetch-Mode": "navigate",
+            "Sec-Fetch-Site": "same-origin",
+            "Sec-Fetch-User": "?1",
+            "Priority": "u=0, i",
+            "TE": "trailers",
+        }
+
+        # debug: log payload keys and redact large source content
+        try:
+            short_payload = {
+                k: (
+                    f"<source {len(v)} bytes>"
+                    if k == "source" and isinstance(v, str)
+                    else v
+                )
+                for k, v in payload.items()
+            }
+            LOGGER.debug(
+                "Submitting POST %s with payload keys/preview: %s", url, short_payload
+            )
+            # Prepare an encoded preview for diagnostics (requests will still encode when sending dict)
+            try:
+                encoded_preview = urlencode(payload, doseq=True, quote_via=quote_plus)
+            except Exception:
+                encoded_preview = ""
+            LOGGER.debug("Encoded form body preview: %s", encoded_preview[:300])
+
+            # Use requests to encode the form data (pass dict) rather than pre-encoding
+            LOGGER.debug("Attempting non-AJAX (browser-like) submit to %s", url)
+            LOGGER.debug("Current session cookies: %s", session.cookies.get_dict())
+            # prepare request to inspect exact headers/body that will be sent
+            req = requests.Request("POST", url, data=payload, headers=headers)
+            prep = session.prepare_request(req)
+            try:
+                body_preview = (
+                    prep.body[:1000]
+                    if isinstance(prep.body, (bytes, str))
+                    else str(type(prep.body))
+                )
+            except Exception:
+                body_preview = "<unprintable>"
+            LOGGER.debug("Prepared request headers: %s", dict(prep.headers))
+            LOGGER.debug("Prepared request body preview: %s", body_preview)
+            resp = session.send(prep, timeout=self.timeout, allow_redirects=True)
+            LOGGER.debug(
+                "POST status_code=%s headers=%s final_url=%s",
+                resp.status_code,
+                dict(resp.headers),
+                resp.url,
+            )
+
+            # If server redirected or returned 200 with a script calling fresh_result, handle below
+            # If response looks like AJAX echo, try that too
+            if resp.status_code == 200 and resp.text:
+                m_ajax = re.search(r"\b(\d{3,})\b", resp.text)
+                if m_ajax:
+                    return int(m_ajax.group(1))
+
+        except RequestException as exc:
+            raise LoginError(f"提交请求失败: {exc}") from exc
+
+        # If server returned an error code, include a snippet for debugging
+        if resp.status_code >= 400:
+            body = resp.text[:2000] if resp.text else ""
+            LOGGER.error("提交返回 %s, 响应片段: %s", resp.status_code, body)
+            raise LoginError(
+                f"提交请求失败: {resp.status_code} {resp.reason}. 响应片段: {body}"
+            )
+
 
     @staticmethod
     def parse_contest_html(html: str) -> list[dict]:

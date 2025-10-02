@@ -27,9 +27,11 @@
   + 返回格式 List[{"Order": "1470", "Problem": "A"},]
   + [x] 已完成
 4. 在 `https://{domain}/onlinejudge/submitpage.php?id={number}`中为指定语言, c, cpp, java提交代码
-  + 并获取结果
+  + [x] 已完成
+  + 结果获取不了
 5. 在 `https://{domain}/onlinejudge/problem.php?cid={number}&pid={number}`中为指定语言, c, cpp, java提交代码
-  + 并获取结果
+  + [x] 已完成
+  + 本地没有能提交的contest, 无法测试, 理论上可以执行.
 
 ## 参考资料
 
