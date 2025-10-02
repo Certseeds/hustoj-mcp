@@ -332,3 +332,4 @@ fabric.properties
 ## 
 
 *.old
+*.python-version
