@@ -95,6 +95,20 @@ def _cmd_problem(args: argparse.Namespace) -> int:
     return 0
 
 
+def _cmd_contest(args: argparse.Namespace) -> int:
+    cfg = ConfigStore()
+    cfg_data = cfg.load() or {}
+    domain = cfg_data.get("domain") or input("域名: ")
+    client = HUSTOJClient(domain, session_store=SessionStore())
+    try:
+        problems = client.fetch_contest_problems(args.cid)
+    except Exception as exc:
+        logging.error("获取比赛题目失败: %s", exc)
+        return 1
+    print(json.dumps(problems, indent=2, ensure_ascii=False))
+    return 0
+
+
 def _cmd_config(args: argparse.Namespace) -> int:
     cfg = ConfigStore()
     if args.action == "show":
@@ -159,6 +173,10 @@ def _build_parser() -> argparse.ArgumentParser:
     problem_parser.add_argument("--id", type=int, required=True, help="题目 id")
     problem_parser.add_argument("--output", help="可选，将完整 HTML 保存到文件")
     problem_parser.set_defaults(func=_cmd_problem)
+
+    contest_parser = subparsers.add_parser("contest", help="获取比赛下的题目列表")
+    contest_parser.add_argument("--cid", type=int, required=True, help="比赛 cid")
+    contest_parser.set_defaults(func=_cmd_contest)
 
     return parser
 

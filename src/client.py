@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Dict, Optional, Tuple
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse, parse_qs
 
 import requests
 from bs4 import BeautifulSoup
@@ -418,3 +418,84 @@ class HUSTOJClient:
         if "alert" in lowered and "wrong" in lowered:
             return ("登录失败", False)
         return ("登录成功", True)
+
+    def fetch_contest_problems(self, cid: int) -> list[dict]:
+        """Fetch contest page and extract list of problems with Order/Problem.
+
+        Returns a list of dicts like: {"Order": "1470", "Problem": "A"}
+        """
+        session = self._ensure_session()
+        url = self._url(f"onlinejudge/contest.php?cid={cid}")
+        try:
+            resp = session.get(url, timeout=self.timeout)
+            resp.raise_for_status()
+        except RequestException as exc:
+            raise LoginError(f"无法获取竞赛页面: {exc}") from exc
+        return self.parse_contest_html(resp.text)
+
+    @staticmethod
+    def parse_contest_html(html: str) -> list[dict]:
+        """Parse contest HTML and return list of {Order: int, problem: str}.
+
+        The function implements heuristics for standard HUSTOJ contest pages.
+        """
+        soup = BeautifulSoup(html, "html.parser")
+        result: list[dict] = []
+
+        # Prefer the problemset table if present
+        table = soup.find("table", id="problemset") or soup.find("table")
+        rows = table.find_all("tr") if table else soup.find_all("tr")
+
+        for tr in rows:
+            # skip header/empty rows
+            if not tr.find_all("td"):
+                continue
+            tds = tr.find_all("td")
+            # expect the layout similar to the example: [., OrderTD, TitleTD, ...]
+            order_val = None
+            problem_letter = None
+
+            # try to parse order from the second td
+            if len(tds) >= 2:
+                txt = tds[1].get_text(" ", strip=True)
+                m = re.search(r"(\d+)", txt)
+                if m:
+                    try:
+                        order_val = int(m.group(1))
+                    except ValueError:
+                        order_val = None
+
+            # try to derive problem letter from a pid= query param on the problem link
+            # usually the title column contains a link like problem.php?cid=1039&pid=0
+            anchor = None
+            if len(tds) >= 3:
+                anchor = tds[2].find("a")
+            if not anchor:
+                # fallback: any anchor in the row
+                anchor = tr.find("a")
+
+            if anchor and anchor.get("href"):
+                href = anchor.get("href")
+                try:
+                    parsed = urlparse(href)
+                    qs = parse_qs(parsed.query)
+                    pid_vals = qs.get("pid") or qs.get("p")
+                    if pid_vals:
+                        pid = int(pid_vals[0])
+                        if pid >= 0:
+                            problem_letter = chr(ord("A") + pid)
+                except Exception:
+                    problem_letter = None
+
+            # final fallback: try to extract a trailing uppercase letter from the order td
+            if not problem_letter and len(tds) >= 2:
+                txt = tds[1].get_text(" ", strip=True)
+                m2 = re.search(r"\b([A-Z])\b$", txt)
+                if m2:
+                    problem_letter = m2.group(1)
+
+            # if we successfully parsed an order and a problem letter, append
+            if order_val is not None and problem_letter:
+                result.append({"Order": order_val, "problem": problem_letter})
+
+        return result
