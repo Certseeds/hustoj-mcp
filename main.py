@@ -70,7 +70,7 @@ def _cmd_problem(args: argparse.Namespace) -> int:
     store = SessionStore()
     client = HUSTOJClient(domain, session_store=store)
     try:
-        result = client.fetch_problem(args.id)
+        result = client.fetch_problem(args.id, args.cid, args.pid)
     except Exception as exc:
         logging.error("获取题目失败: %s", exc)
         return 1
@@ -207,6 +207,8 @@ def _build_parser() -> argparse.ArgumentParser:
 
     problem_parser = subparsers.add_parser("problem", help="获取题目页面并提取内容")
     problem_parser.add_argument("--id", type=int, required=True, help="题目 id")
+    problem_parser.add_argument("--cid", type=int, required=True, help="contest id")
+    problem_parser.add_argument("--pid", type=int, required=True, help="contest内的题目序号, 从0开始")
     problem_parser.add_argument("--output", help="可选，将完整 HTML 保存到文件")
     problem_parser.set_defaults(func=_cmd_problem)
 

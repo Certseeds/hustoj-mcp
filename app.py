@@ -88,8 +88,8 @@ def session_delete() -> dict:
 
 
 @mcp.tool()
-def problem(problem_id: int) -> dict:
-    """Fetch a problem page and return extracted parts."""
+def problem(problem_id: int, cid: int, pid: int) -> dict:
+    """Fetch a problem page and return extracted parts. problem_id or (cid and pid) required."""
     cfg = ConfigStore()
     cfg_data = cfg.load() or {}
     domain = cfg_data.get("domain")
@@ -98,7 +98,7 @@ def problem(problem_id: int) -> dict:
     store = SessionStore()
     client = HUSTOJClient(domain, session_store=store)
     try:
-        res = client.fetch_problem(problem_id)
+        res = client.fetch_problem(problem_id, cid, pid)
     except Exception as exc:
         return {"ok": False, "error": str(exc)}
 
@@ -131,7 +131,7 @@ def submit(
     pid: Optional[int] = None,
     language: Optional[str] = "cpp",
     vcode: Optional[str] = None,
-    test_run: Optional[bool] = False
+    test_run: Optional[bool] = False,
 ) -> dict:
     """Submit source code to a problem or contest.
 

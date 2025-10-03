@@ -187,13 +187,16 @@ class HUSTOJClient:
             raise LoginError(f"获取验证码失败: {exc}") from exc
         return response.content
 
-    def fetch_problem(self, problem_id: int) -> Dict[str, object]:
+    def fetch_problem(self, problem_id: int, cid: int, pid: int) -> Dict[str, object]:
         """Fetch the full problem page and extract main parts.
 
         Returns a dict with keys: url, status_code, html, title (if found), parts(dict).
         """
         session = self._ensure_session()
-        url = self._url(f"onlinejudge/problem.php?id={problem_id}")
+        if cid is not None and pid is not None:
+            url = self._url(f"onlinejudge/problem.php?cid={cid}&pid={pid}")
+        elif problem_id:
+            url = self._url(f"onlinejudge/problem.php?id={problem_id}")
         try:
             resp = session.get(url, timeout=self.timeout)
             resp.raise_for_status()
@@ -483,7 +486,7 @@ class HUSTOJClient:
                 raise ValueError("language 必须是 int/str/Language 之一")
 
         # warm up session by loading the submit page (some servers check referer/cookies)
-        if problem_id is not None:
+        if problem_id:
             submitpage_path = f"onlinejudge/submitpage.php?id={problem_id}"
         else:
             # contest submitpage
