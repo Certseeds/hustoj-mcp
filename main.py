@@ -16,7 +16,7 @@ def _configure_logging(verbose: bool) -> None:
     logging.basicConfig(level=level, format="[%(levelname)s] %(message)s")
 
 
-def _cmd_login() -> int:
+def _cmd_login(args: argparse.Namespace) -> int:
     cfg = ConfigStore()
     cfg_data = cfg.load() or {}
     domain = cfg_data.get("domain") or input("域名: ")
@@ -59,7 +59,7 @@ def _cmd_session(args: argparse.Namespace) -> int:
         store.delete()
         print(f"已删除会话文件: {store.file_path}")
         return 0
-    _cmd_login()
+    _cmd_login(None)
     return 0
 
 
@@ -111,7 +111,7 @@ def _cmd_contest(args: argparse.Namespace) -> int:
 
 def _cmd_submit(args: argparse.Namespace) -> int:
     # refresh session by performing a login before each submit
-    login_rc = _cmd_login()
+    login_rc = _cmd_login(args)
     if login_rc != 0:
         logging.error("在提交前刷新会话失败，取消提交")
         return 1
@@ -189,7 +189,6 @@ def _build_parser() -> argparse.ArgumentParser:
     config_parser.set_defaults(func=_cmd_config)
 
     login_parser = subparsers.add_parser("login", help="登录并保存会话")
-    login_parser.add_argument("--vcode", help="验证码, 如站点要求")
     login_parser.set_defaults(func=_cmd_login)
 
     session_parser = subparsers.add_parser(
@@ -243,4 +242,4 @@ def main(argv: list[str] | None = None) -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    main()
