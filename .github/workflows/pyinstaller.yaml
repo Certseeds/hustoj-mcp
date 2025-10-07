@@ -1,0 +1,37 @@
+name: Build Windows Executable
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Install the latest version of uv and set the python version to 3.13t
+        uses: astral-sh/setup-uv@v6
+        with:
+          version: latest
+          python-version: 3.13
+          activate-environment: true
+
+      - name: Install project dependencies (with dev)
+        run: |
+          uv sync --extra dev
+
+      - name: Build executable with PyInstaller
+        run: |
+          uv run pyinstaller --clean main.spec
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hustoj-cli.exe
+          path: dist/hustoj-cli.exe
